@@ -86,6 +86,8 @@ const blnOstbahnhof = '8010255'
 const blnTiergarten = '8089091'
 const blnJannowitzbrücke = '8089019'
 const potsdamHbf = '8012666'
+const berlinSüdkreuz = '8011113'
+const kölnHbf = '8000207'
 
 test('journeys – Berlin Schwedter Str. to München Hbf', async (t) => {
 	const res = await client.journeys(blnSchwedterStr, münchenHbf, {

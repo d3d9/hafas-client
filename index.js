@@ -11,6 +11,7 @@ const createParseBitmask = require('./parse/products-bitmask')
 const createFormatProductsFilter = require('./format/products-filter')
 const validateProfile = require('./lib/validate-profile')
 const _request = require('./lib/request')
+const sliceLeg = require('./lib/slice-leg')
 
 const isNonEmptyString = str => 'string' === typeof str && str.length > 0
 
@@ -290,6 +291,132 @@ const createClient = (profile, userAgent, request = _request) => {
 		})
 	}
 
+	// Although the DB Navigator app passes the *first* stopover of the trip (instead of the
+	// previous one), it seems to work like this as well.
+	const journeysFromTrip = (fromTripId, previousStopover, to, opt = {}) => {
+		if (!isNonEmptyString(fromTripId)) {
+			throw new Error('fromTripId must be a non-empty string.')
+		}
+
+		if ('string' === typeof to) to = profile.formatStation(to)
+		else if (isObj(to) && (to.type === 'station' || to.type === 'stop')) to = profile.formatStation(to.id)
+		else throw new Error('to must be a valid stop or station.')
+
+		if (!isObj(previousStopover)) throw new Error('previousStopover must be an object.')
+
+		let prevStop = previousStopover.stop
+		if (isObj(prevStop)) prevStop = profile.formatStation(prevStop.id)
+		else if ('string' === typeof prevStop) prevStop = profile.formatStation(prevStop)
+		else throw new Error('previousStopover.stop must be a stop object or a string.')
+
+		let depAtPrevStop = previousStopover.departure || previousStopover.scheduledDeparture
+		if (!isNonEmptyString(depAtPrevStop)) {
+			throw new Error('previousStopover.(scheduled)departure must be a string')
+		}
+		depAtPrevStop = +new Date(depAtPrevStop)
+		if (Number.isNaN(depAtPrevStop)) {
+			throw new Error('previousStopover.(scheduled)departure is invalid')
+		}
+		if (depAtPrevStop > Date.now()) {
+			throw new Error('previousStopover.(scheduled)departure must be in the past')
+		}
+
+		opt = Object.assign({
+			accessibility: 'none', // 'none', 'partial' or 'complete'
+			stopovers: false, // return stations on the way?
+			polylines: false, // return leg shapes?
+			transferTime: 0, // minimum time for a single transfer in minutes
+			tickets: false, // return tickets?
+			remarks: true // parse & expose hints & warnings?
+		}, opt)
+
+		// make clear that `departure`/`arrival`/`when` are not supported
+		if (opt.departure) throw new Error('journeysFromTrip + opt.departure is not supported by HAFAS.')
+		if (opt.arrival) throw new Error('journeysFromTrip + opt.arrival is not supported by HAFAS.')
+		if (opt.when) throw new Error('journeysFromTrip + opt.when is not supported by HAFAS.')
+
+		const filters = [
+			profile.formatProductsFilter(opt.products || {})
+		]
+		if (
+			opt.accessibility &&
+			profile.filters &&
+			profile.filters.accessibility &&
+			profile.filters.accessibility[opt.accessibility]
+		) {
+			filters.push(profile.filters.accessibility[opt.accessibility])
+		}
+
+		// todo: are these supported?
+		// - outFrwd
+		// - getPT
+		// - getIV
+		// - trfReq
+		// features from `journeys()` not supported here:
+		// - `maxChg`: maximum nr of transfers
+		// - `bike`: only bike-friendly journeys
+		// - `results`: how many journeys?
+		// - `via`: let journeys pass this station
+		// todo: find a way to support them
+
+		const query = {
+			jid: fromTripId,
+			locData: { // when & where the trip has been entered
+				loc: prevStop,
+				type: 'DEP', // todo: are there other values?
+				date: profile.formatDate(profile, depAtPrevStop),
+				time: profile.formatTime(profile, depAtPrevStop)
+			},
+			arrLocL: [to],
+			jnyFltrL: filters,
+			getPasslist: !!opt.stopovers,
+			getPolyline: !!opt.polylines,
+			minChgTime: opt.transferTime,
+			getTariff: !!opt.tickets,
+			sotMode: 'JI' // todo: this is required, but what is it for?
+		}
+
+		return request(profile, userAgent, opt, {
+			cfg: {polyEnc: 'GPA'},
+			meth: 'SearchOnTrip',
+			req: query
+		})
+		.then((d) => {
+			if (!Array.isArray(d.outConL)) return []
+
+			const parse = profile.parseJourney(profile, opt, {
+				locations: d.locations,
+				lines: d.lines,
+				hints: d.hints,
+				warnings: d.warnings,
+				polylines: opt.polylines && d.common.polyL || []
+			})
+			return d.outConL
+			.map(parse)
+			// For the first (transit) leg, HAFAS sometimes returns *all* past stopovers of the trip,
+			// even though it should only return stopovers between the specified `depAtPrevStop` and
+			// the arrival at the interchange station. We slice the leg accordingly.
+			.map((journey) => {
+				const fromLegI = journey.legs.findIndex(l => l.tripId === fromTripId)
+				if (fromLegI < 0) return journey
+				const fromLeg = journey.legs[fromLegI]
+
+				try {
+					const slicedFromLeg = sliceLeg(fromLeg, previousStopover.stop, fromLeg.destination)
+					return Object.assign({}, journey, {
+						legs: [
+							...journey.legs.slice(0, fromLegI),
+							slicedFromLeg,
+							...journey.legs.slice(fromLegI + 2)
+						]
+					})
+				} catch (err) { // todo: wut?
+					return journey
+				}
+			})
+		})
+	}
+
 	const locations = (query, opt = {}) => {
 		if (!isNonEmptyString(query)) {
 			throw new TypeError('query must be a non-empty string.')
@@ -546,6 +673,7 @@ const createClient = (profile, userAgent, request = _request) => {
 	if (profile.trip) client.trip = trip
 	if (profile.radar) client.radar = radar
 	if (profile.refreshJourney) client.refreshJourney = refreshJourney
+	if (profile.journeysFromTrip) client.journeysFromTrip = journeysFromTrip
 	if (profile.reachableFrom) client.reachableFrom = reachableFrom
 	Object.defineProperty(client, 'profile', {value: profile})
 	return client

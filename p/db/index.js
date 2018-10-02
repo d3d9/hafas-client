@@ -387,6 +387,7 @@ const dbProfile = {
 
 	formatStation,
 
+	journeysFromTrip: true,
 	trip: true, // todo: #49
 	radar: true,
 	reachableFrom: true
