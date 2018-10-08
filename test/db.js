@@ -5,6 +5,8 @@ const a = require('assert')
 const tapePromise = require('tape-promise').default
 const tape = require('tape')
 const isRoughlyEqual = require('is-roughly-equal')
+const maxBy = require('lodash/maxBy')
+const flatMap = require('lodash/flatMap')
 
 const {createWhen} = require('./lib/util')
 const createClient = require('..')
@@ -30,6 +32,7 @@ const testJourneysWithDetour = require('./lib/journeys-with-detour')
 const testReachableFrom = require('./lib/reachable-from')
 
 const isObj = o => o !== null && 'object' === typeof o && !Array.isArray(o)
+const minute = 60 * 1000
 
 const when = createWhen('Europe/Berlin', 'de-DE')
 
@@ -226,6 +229,79 @@ test('refreshJourney', async (t) => {
 		when
 	})
 	t.end()
+})
+
+test('journeysFromTrip – U Mehringdamm to U Naturkundemuseum, reroute to Spittelmarkt.', async (t) => {
+	const isTransitLeg = leg => !!leg.line
+	const stationIdOrStopId = stop => stop.station && stop.station.id || stop.id
+	const departureOf = st => +new Date(st.departure || st.scheduledDeparture)
+	const arrivalOf = st => +new Date(st.arrival || st.scheduledArrival)
+
+	// `journeysFromTrip` only supports queries *right now*, so can't use the `when` used in
+	// all other tests. To make the test less brittle, we pick a connection that is served all night. 🙄
+	const when = new Date()
+	const validate = createValidate({...cfg, when})
+
+	const findTripBetween = async (stopA, stopB, direction, products = {}) => {
+		const {journeys} = await client.journeys(stopA, stopB, {
+			departure: new Date(when - 10 * minute),
+			transfers: 0, products,
+			results: 8, stopovers: false, remarks: false
+		})
+		for (const j of journeys) {
+			const l = j.legs.find(isTransitLeg)
+			if (!l) continue
+			const t = await client.trip(l.tripId, l.line && l.line.name, {
+				stopovers: true, remarks: false
+			})
+			const pastStopovers = t.stopovers.filter(st => departureOf(st) < Date.now())
+
+			const hasStoppedAtA = pastStopovers.find(st => stationIdOrStopId(st.stop) === stopA)
+			const willStopAtB = t.stopovers.find((st) => {
+				return stationIdOrStopId(st.stop) === stopB && arrivalOf(st) > Date.now()
+			})
+
+			if (hasStoppedAtA && willStopAtB) {
+				const prevStopover = maxBy(pastStopovers, departureOf)
+				return {trip: t, prevStopover}
+			}
+		}
+		return {trip: null, prevStopover: null}
+	}
+
+	// Find a vehicle from U Mehringdamm to U Naturkunde (to the north) that is currently between
+	// U Mehringdamm and U Naturkundemuseum.
+	const blnMehringdamm = '730939'
+	const blnStadtmitteU6 = '732541'
+	const blnNaturkundemuseum = '732539'
+	const blnSpittelmarkt = '732543'
+	const {trip, prevStopover} = await findTripBetween(blnMehringdamm, blnStadtmitteU6, blnNaturkundemuseum, {
+		regionalExp: false, regional: false, suburban: false
+	})
+	t.ok(trip, 'precondition failed: trip not found')
+	t.ok(prevStopover, 'precondition failed: previous stopover missing')
+
+	// todo: "Error: Suche aus dem Zug: Vor Abfahrt des Zuges"
+	const newJourneys = await client.journeysFromTrip(trip.id, prevStopover, blnSpittelmarkt, {
+		results: 3, stopovers: true, remarks: false
+	})
+
+	// Validate with fake prices.
+	const withFakePrice = (j) => {
+		const clone = Object.assign({}, j)
+		clone.price = {amount: 123, currency: 'EUR'}
+		return clone
+	}
+	// validate(t, newJourneys.map(withFakePrice), 'newJourneys', 'journeysFromTrip') // todo
+
+	for (let i = 0; i < newJourneys.length; i++) {
+		const j = newJourneys[i]
+		const n = `newJourneys[${i}]`
+
+		const legOnTrip = j.legs.find(l => l.tripId === trip.id)
+		t.ok(legOnTrip, n + ': leg with trip ID not found')
+		// todo: `t.equal(last(legOnTrip.stopovers).stop.id, blnStadtmitteU6)
+	}
 })
 
 test('trip details', async (t) => {
