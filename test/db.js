@@ -231,7 +231,7 @@ test('refreshJourney', async (t) => {
 	t.end()
 })
 
-test('journeysFromTrip – U Mehringdamm to U Naturkundemuseum, reroute to Spittelmarkt.', async (t) => {
+test.skip('journeysFromTrip – U Mehringdamm to U Naturkundemuseum, reroute to Spittelmarkt.', async (t) => {
 	const isTransitLeg = leg => !!leg.line
 	const stationIdOrStopId = stop => stop.station && stop.station.id || stop.id
 	const departureOf = st => +new Date(st.departure || st.scheduledDeparture)
@@ -242,7 +242,7 @@ test('journeysFromTrip – U Mehringdamm to U Naturkundemuseum, reroute to Spitt
 	const when = new Date()
 	const validate = createValidate({...cfg, when})
 
-	const findTripBetween = async (stopA, stopB, direction, products = {}) => {
+	const findTripBetween = async (stopA, stopB, products = {}) => {
 		const {journeys} = await client.journeys(stopA, stopB, {
 			departure: new Date(when - 10 * minute),
 			transfers: 0, products,
@@ -269,17 +269,18 @@ test('journeysFromTrip – U Mehringdamm to U Naturkundemuseum, reroute to Spitt
 		return {trip: null, prevStopover: null}
 	}
 
-	// Find a vehicle from U Mehringdamm to U Naturkunde (to the north) that is currently between
-	// U Mehringdamm and U Naturkundemuseum.
+	// Find a vehicle from U Mehringdamm to U Stadtmitte (to the north) that is currently between
+	// U Mehringdamm and U Stadtmitte.
 	const blnMehringdamm = '730939'
 	const blnStadtmitteU6 = '732541'
-	const blnNaturkundemuseum = '732539'
 	const blnSpittelmarkt = '732543'
-	const {trip, prevStopover} = await findTripBetween(blnMehringdamm, blnStadtmitteU6, blnNaturkundemuseum, {
+	const {trip, prevStopover} = await findTripBetween(blnMehringdamm, blnStadtmitteU6, {
 		regionalExp: false, regional: false, suburban: false
 	})
 	t.ok(trip, 'precondition failed: trip not found')
 	t.ok(prevStopover, 'precondition failed: previous stopover missing')
+	console.error(trip.id)
+	console.error(prevStopover)
 
 	// todo: "Error: Suche aus dem Zug: Vor Abfahrt des Zuges"
 	const newJourneys = await client.journeysFromTrip(trip.id, prevStopover, blnSpittelmarkt, {
@@ -287,11 +288,11 @@ test('journeysFromTrip – U Mehringdamm to U Naturkundemuseum, reroute to Spitt
 	})
 
 	// Validate with fake prices.
-	const withFakePrice = (j) => {
-		const clone = Object.assign({}, j)
-		clone.price = {amount: 123, currency: 'EUR'}
-		return clone
-	}
+	// const withFakePrice = (j) => {
+	// 	const clone = Object.assign({}, j)
+	// 	clone.price = {amount: 123, currency: 'EUR'}
+	// 	return clone
+	// }
 	// validate(t, newJourneys.map(withFakePrice), 'newJourneys', 'journeysFromTrip') // todo
 
 	for (let i = 0; i < newJourneys.length; i++) {
@@ -300,6 +301,10 @@ test('journeysFromTrip – U Mehringdamm to U Naturkundemuseum, reroute to Spitt
 
 		const legOnTrip = j.legs.find(l => l.tripId === trip.id)
 		t.ok(legOnTrip, n + ': leg with trip ID not found')
+		if (!legOnTrip) {
+			console.error(j.legs)
+			break
+		}
 		// todo: `t.equal(last(legOnTrip.stopovers).stop.id, blnStadtmitteU6)
 	}
 })
