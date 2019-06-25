@@ -1,9 +1,29 @@
-version: 2
-jobs:
-  build:
-    docker:
-      - image: circleci/node:lts
+version: 2.1
+commands:
+  install-and-test:
     steps:
       - checkout
       - run: npm install
       - run: npm test
+jobs:
+  node-8:
+    docker:
+      - image: circleci/node:8
+    steps:
+      - install-and-test
+  node-lts:
+    docker:
+      - image: circleci/node:lts
+    steps:
+      - install-and-test
+  node-latest:
+    docker:
+      - image: circleci/node:latest
+    steps:
+      - install-and-test
+workflows:
+  build:
+    jobs:
+      - node-8
+      - node-lts
+      - node-latest
